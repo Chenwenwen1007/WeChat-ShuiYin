@@ -1,48 +1,171 @@
-<nav nav-type="search" />
-<view class="home-container">
-  <view class="home-content">
-    <t-tabs defaultValue="recommend">
-      <t-tab-panel label="推荐" value="recommend">
-        <t-pull-down-refresh
-          value="{{enable}}"
-          bind:refresh="onRefresh"
-          loadingTexts="{{['下拉刷新', '松手刷新', '正在刷新', '刷新完成']}}"
-        >
-          <view class="home-card-list">
-            <t-swiper
-              list="{{swiperList}}"
-              navigation="{{ { type: 'dots-bar' } }}"
-              height="488rpx"
-              style="width: 340rpx"
-            />
-            <card
-              wx:for="{{cardInfo}}"
-              wx:key="index"
-              desc="{{item.desc}}"
-              url="{{item.url}}"
-              tags="{{item.tags}}"
-            />
-          </view>
-        </t-pull-down-refresh>
-      </t-tab-panel>
-      <t-tab-panel label="我的关注" value="follow">
-        <view class="home-card-list">
-          <card
-            wx:for="{{focusCardInfo}}"
-            wx:key="index"
-            desc="{{item.desc}}"
-            url="{{item.url}}"
-            tags="{{item.tags}}"
-          />
+<view class="page">
+  <view class="hero fade-card">
+    <view class="hero-badge">Creator Workspace</view>
+    <view class="hero-title">个人创作工具箱</view>
+    <view class="hero-subtitle">
+      一个只给自己使用的轻量工作台，先把短视频解析做好，后面再逐步补充你的创作模块。
+    </view>
+  </view>
+
+  <view class="overview fade-card">
+    <view class="section-title">功能模块</view>
+    <view class="module-grid">
+      <view
+        wx:for="{{modules}}"
+        wx:key="key"
+        class="module-card {{activeModule === item.key ? 'module-card--active' : ''}}"
+        data-key="{{item.key}}"
+        bindtap="switchModule"
+      >
+        <view class="module-header">
+          <view class="module-title">{{item.title}}</view>
+          <view class="module-status">{{item.status}}</view>
         </view>
-      </t-tab-panel>
-    </t-tabs>
+        <view class="module-desc">{{item.desc}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="panel fade-card">
+    <view class="section-title">短视频解析模块</view>
+    <view class="section-subtitle">给奶奶用的无水印视频下载工具，操作简单</view>
+
+    <view class="variant-switch">
+      <view
+        class="variant-pill {{importMode === 'auto' ? 'variant-pill--active' : ''}}"
+        data-mode="auto"
+        bindtap="switchImportMode"
+      >
+        自动识别
+      </view>
+      <view
+        class="variant-pill {{importMode === 'parse' ? 'variant-pill--active' : ''}}"
+        data-mode="parse"
+        bindtap="switchImportMode"
+      >
+        平台解析
+      </view>
+      <view
+        class="variant-pill {{importMode === 'direct' ? 'variant-pill--active' : ''}}"
+        data-mode="direct"
+        bindtap="switchImportMode"
+      >
+        外部直链
+      </view>
+    </view>
+
+    <view class="parse-mode-row" wx:if="{{importMode === 'parse' || importMode === 'auto'}}">
+      <view class="parse-mode-label">解析方式：</view>
+      <view class="parse-mode-switch">
+        <view
+          class="parse-mode-pill {{parseMode === 'auto' ? 'parse-mode-pill--active' : ''}}"
+          data-mode="auto"
+          bindtap="switchParseMode"
+        >
+          智能优选
+        </view>
+        <view
+          class="parse-mode-pill {{parseMode === 'native' ? 'parse-mode-pill--active' : ''}}"
+          data-mode="native"
+          bindtap="switchParseMode"
+        >
+          平台解析
+        </view>
+        <view
+          class="parse-mode-pill {{parseMode === 'third_party' ? 'parse-mode-pill--active' : ''}}"
+          data-mode="third_party"
+          bindtap="switchParseMode"
+        >
+          第三方API
+        </view>
+      </view>
+    </view>
+
+    <view class="parse-mode-hint" wx:if="{{parseMode === 'auto' && importMode !== 'direct'}}">
+      智能优选：先使用平台解析，若去水印失败自动切换第三方API
+    </view>
+    <view class="parse-mode-hint" wx:if="{{parseMode === 'native' && importMode !== 'direct'}}">
+      平台解析：免费，但去水印稳定性一般
+    </view>
+    <view class="parse-mode-hint" wx:if="{{parseMode === 'third_party' && importMode !== 'direct'}}">
+      第三方API：去水印更稳定，需提前配置API地址
+    </view>
+
+    <textarea
+      class="input-box"
+      maxlength="-1"
+      placeholder="粘贴抖音分享文案或链接"
+      value="{{inputText}}"
+      bindinput="handleInput"
+    />
+
+    <view class="action-row">
+      <button class="ghost-button" bindtap="pasteClipboard">粘贴链接</button>
+      <button class="primary-button" loading="{{loading}}" bindtap="submitInput">开始处理</button>
+    </view>
+
+    <view class="hint-text">本地调试接口：{{apiBaseUrl}}</view>
+  </view>
+
+  <view wx:if="{{errorMessage}}" class="error-card fade-card">
+    {{errorMessage}}
+  </view>
+
+  <view wx:if="{{parseResult}}" class="result-card fade-card">
+    <view class="result-header">
+      <view>
+        <view class="result-platform">{{parseResult.platform_label || '外部直链'}}</view>
+        <view class="result-title">{{parseResult.title}}</view>
+      </view>
+      <view class="tag">{{parseResult.author || '当前可下载'}}</view>
+    </view>
+
+    <view wx:if="{{parseResult.watermark_video_url}}" class="variant-switch">
+      <view
+        class="variant-pill {{activeVariant === 'watermark' ? 'variant-pill--active' : ''}}"
+        data-variant="watermark"
+        bindtap="switchVariant"
+      >
+        有水印
+      </view>
+      <view
+        class="variant-pill {{activeVariant === 'no_watermark' ? 'variant-pill--active' : ''}}"
+        data-variant="no_watermark"
+        bindtap="switchVariant"
+      >
+        无水印
+      </view>
+    </view>
+
+    <view class="variant-note">{{variantNote}}</view>
+
+    <image wx:if="{{coverUrl}}" class="cover-image" mode="aspectFill" src="{{coverUrl}}" />
+
+    <video
+      class="video-player"
+      src="{{videoUrl}}"
+      poster="{{coverUrl}}"
+      controls
+      show-center-play-btn
+      objectFit="contain"
+    />
+
+    <view class="action-row">
+      <button class="ghost-button" bindtap="copyDownloadLink">复制视频地址</button>
+      <button class="primary-button" bindtap="saveVideo">下载保存</button>
+    </view>
+
+    <view class="detail-toggle" bindtap="toggleDetail">
+      <text class="detail-toggle-text">{{showDetail ? '隐藏详情' : '显示详情'}}</text>
+      <text class="detail-toggle-arrow">{{showDetail ? '▲' : '▼'}}</text>
+    </view>
+
+    <view class="meta-group" wx:if="{{showDetail}}">
+      <view class="meta-item">当前视频地址：{{currentVideoSource}}</view>
+      <view wx:if="{{parseResult.parse_source}}" class="meta-item">解析来源：{{parseResult.parse_source === 'third_party' ? '第三方API' : parseResult.parse_source === 'fallback' ? '第三方兜底' : '平台解析'}}</view>
+      <view wx:if="{{parseResult.no_watermark_verified !== undefined}}" class="meta-item">无水印验证：{{parseResult.no_watermark_verified ? '已通过' : '未通过/未验证'}}</view>
+      <view wx:if="{{parseResult.raw_url}}" class="meta-item">原始链接：{{parseResult.raw_url}}</view>
+      <view wx:if="{{parseResult.resolved_url}}" class="meta-item">解析链接：{{parseResult.resolved_url}}</view>
+    </view>
   </view>
 </view>
-
-<view class="home-release">
-  <t-button theme="primary" size="large" icon="add" shape="round" bindtap="goRelease">
-    发布
-  </t-button>
-</view>
-<t-message id="t-message" />

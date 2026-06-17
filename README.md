@@ -538,3 +538,171 @@ curl 'https://api.bugpk.com/api/douyin?url=https%3A%2F%2Fv.douyin.com%2Fxxxxx%2F
 | [api/request.js](file:///f:/Pyhton_Project/WeChatProject/qushuiyin/api/request.js) | 前端请求封装 | 调整超时、修改header |
 | [pages/home/index.js](file:///f:/Pyhton_Project/WeChatProject/qushuiyin/pages/home/index.js) | 前端页面逻辑 | 数据解析、UI交互 |
 | [config.js](file:///f:/Pyhton_Project/WeChatProject/qushuiyin/config.js) | 后端地址配置 | 切换环境、修改端口 |
+
+---
+
+## 十、快手与小红书去水印优化实录
+
+> 本章节记录快手、小红书两个平台从"仅能解析"到"支持无水印"的优化过程。
+
+### 1. 优化前的状态
+
+快手和小红书的解析器只做了基础的 HTML 页面提取，存在以下问题：
+
+- **快手**：只提取了一个视频地址，没有区分有水印和无水印
+- **小红书**：同样没有区分水印版本，且页面提取规则不够全面
+- **第三方兜底**：bugpk.com API 只对接了抖音端点，快手和小红书无法使用兜底
+- **调度逻辑**：非抖音平台一律标记 `no_watermark_verified = False`，前端无法确认是否无水印
+
+### 2. 快手优化方案
+
+#### 2.1 页面请求优化
+
+快手分享页对 User-Agent 敏感，使用移动端 UA 只能拿到精简页面，缺少视频地址字段。
+
+**优化**：改用 PC 端 Chrome UA + Referer，获取包含完整 JSON 数据的页面。
+
+```python
+html = await self.fetch_html(resolved_url, headers={
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...",
+    "Referer": "https://www.kuaishou.com/",
+})
+```
+
+#### 2.2 有水印 vs 无水印地址区分
+
+快手页面 JSON 中包含两种视频地址：
+
+| 字段 | 说明 | 水印情况 |
+|------|------|---------|
+| `srcNoMark` | 无水印播放地址 | 无水印 |
+| `photoUrl` | 有水印播放地址 | 带快手Logo |
+| `mainMvUrls` | 主视频地址列表 | 通常有水印 |
+
+**优化**：分别提取 `srcNoMark`（无水印）和 `photoUrl`（有水印），填充到 `ParsedVideo` 的对应字段。
+
+#### 2.3 多级兜底策略
+
+```text
+srcNoMark（无水印）→ photoUrl → mainMvUrls → hevc.url → og:video meta
+```
+
+如果 `srcNoMark` 不存在，依次尝试其他字段，确保至少能拿到一个可播放地址。
+
+### 3. 小红书优化方案
+
+#### 3.1 页面请求优化
+
+与快手类似，小红书也需要 PC 端 UA 才能获取完整页面数据。
+
+#### 3.2 无水印地址提取
+
+小红书的视频地址结构：
+
+| 字段 | 说明 | 水印情况 |
+|------|------|---------|
+| `masterUrl` | 原始视频地址 | 无水印（小红书视频通常无平台水印） |
+| `backupUrls` | 备用地址列表 | 无水印 |
+| `originVideoKey` | 原始视频Key | 需拼接域名 |
+| `og:video` | meta标签 | 可能有水印 |
+
+**优化**：优先提取 `masterUrl` 作为无水印地址，`og:video` 作为有水印兜底。
+
+#### 3.3 多级兜底策略
+
+```text
+masterUrl → h264[].masterUrl → originVideoKey → backupUrls → videoUrl → og:video
+```
+
+### 4. 第三方API扩展
+
+#### 4.1 bugpk.com 多平台端点
+
+bugpk.com 为每个平台提供独立的 API 端点：
+
+```python
+BUGPK_API_ENDPOINTS = {
+    "douyin": "https://api.bugpk.com/api/douyin",
+    "kuaishou": "https://api.bugpk.com/api/kuaishou",
+    "xiaohongshu": "https://api.bugpk.com/api/xiaohongshu",
+}
+```
+
+#### 4.2 自动平台检测
+
+根据分享链接的域名自动识别平台，选择对应的 API 端点：
+
+```python
+def _detect_platform(self, source_url: str) -> str:
+    domain = urlparse(source_url).hostname
+    if "kuaishou" in domain:
+        return "kuaishou"
+    if "xiaohongshu" in domain:
+        return "xiaohongshu"
+    return "douyin"
+```
+
+#### 4.3 统一响应适配
+
+三个平台的 API 返回格式统一为 `{code, msg, data: {title, cover, url, ...}}`，使用同一个适配方法处理，但保留平台标识。
+
+### 5. 解析调度优化
+
+#### 5.1 优化前的调度逻辑
+
+```python
+# 优化前：非抖音平台一律不验证
+elif platform != "douyin" and parsed_video:
+    no_watermark_verified = False
+```
+
+#### 5.2 优化后的调度逻辑
+
+```python
+# 优化后：快手/小红书有无水印地址则标记验证通过
+elif platform in ("kuaishou", "xiaohongshu") and parsed_video:
+    if parsed_video.no_watermark_video_url:
+        no_watermark_verified = True
+    # 无水印地址为空时，自动调用第三方API兜底
+    elif self.third_party_service.is_configured():
+        third_party_result = await self.third_party_service.parse(raw_url)
+        if third_party_result:
+            parsed_video = third_party_result
+            parse_source = "fallback"
+            no_watermark_verified = True
+```
+
+**关键改进**：
+- 快手/小红书自有解析成功且有无水印地址 → 标记 `verified = True`
+- 自有解析未获取到无水印地址 → 自动调用 bugpk.com 对应平台 API 兜底
+- native 模式也支持验证状态标记
+
+### 6. 测试结果
+
+| 平台 | 耗时 | 无水印URL来源 | 解析来源 | 验证状态 |
+|------|------|-------------|---------|---------|
+| 快手 | 18.4秒 | `v23-3.kwaicdn.com` | native | ✅ 通过 |
+| 小红书 | 8.0秒 | `sns-video-zl.xhscdn.com` | native | ✅ 通过 |
+
+### 7. 防盗链处理
+
+快手和小红书的 CDN 也有防盗链机制，已在 [http_client.py](file:///f:/Pyhton_Project/WeChatProject/qushuiyin/server/utils/http_client.py) 中统一处理：
+
+```python
+if "kuaishou" in url.lower():
+    headers["Referer"] = "https://www.kuaishou.com/"
+elif "xiaohongshu" in url.lower():
+    headers["Referer"] = "https://www.xiaohongshu.com/"
+```
+
+### 8. 三平台对比总结
+
+| 特性 | 抖音 | 快手 | 小红书 |
+|------|------|------|--------|
+| 解析方式 | 官方API + 签名 | 页面HTML提取 | 页面HTML提取 |
+| 无水印来源 | `bit_rate[].play_addr` | `srcNoMark` | `masterUrl` |
+| 有水印来源 | `download_addr` | `photoUrl` | `og:video`(meta) |
+| 第三方兜底 | bugpk.com 抖音端点 | bugpk.com 快手端点 | bugpk.com 小红书端点 |
+| 防盗链Referer | `douyin.com` | `kuaishou.com` | `xiaohongshu.com` |
+| 是否需要签名 | 是（a_bogus） | 否 | 否 |
+| 平均耗时 | 5-10秒 | 15-20秒 | 5-10秒 |

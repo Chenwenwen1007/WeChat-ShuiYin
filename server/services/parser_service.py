@@ -65,14 +65,25 @@ class ParserService:
                         if third_party_result:
                             parsed_video = third_party_result
                             parse_source = "fallback"
-                elif platform != "douyin" and parsed_video:
-                    # 非抖音平台，自有解析暂无法去水印，标记未验证
-                    no_watermark_verified = False
+                elif platform in ("kuaishou", "xiaohongshu") and parsed_video:
+                    # 快手/小红书：自有解析已提取无水印地址，标记为已验证
+                    if parsed_video.no_watermark_video_url:
+                        no_watermark_verified = True
+                    # 若自有解析未获取到无水印地址，尝试第三方API兜底
+                    elif self.third_party_service.is_configured():
+                        logger.info("%s自有解析未获取无水印地址，尝试第三方API兜底", platform)
+                        third_party_result = await self.third_party_service.parse(raw_url)
+                        if third_party_result:
+                            parsed_video = third_party_result
+                            parse_source = "fallback"
+                            no_watermark_verified = True
             else:
                 # native模式：仅使用自有解析
                 parsed_video = await self.parsers[platform].parse(raw_url, resolved_url)
                 if platform == "douyin" and parsed_video:
                     no_watermark_verified = True
+                elif platform in ("kuaishou", "xiaohongshu") and parsed_video:
+                    no_watermark_verified = bool(parsed_video.no_watermark_video_url)
 
             if not parsed_video:
                 raise ParseError(
